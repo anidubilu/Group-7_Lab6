@@ -2,8 +2,7 @@
 #include <queue.h>
 #include <semphr.h>
 #include <Wire.h>
-#include <Adafruit_Sensor.h>
-#include <Adafruit_TSL2561_U.h>
+
 
 // Pins
 #define LED1_PIN    13
@@ -18,7 +17,7 @@
 // FreeRTOS objects
 QueueHandle_t  xButtonQueue;
 SemaphoreHandle_t xSerialMutex;
-Adafruit_TSL2561_Unified tsl = Adafruit_TSL2561_Unified(TSL2561_ADDR);
+
 
 // ISR: notify button task
 void buttonISR() {
@@ -58,36 +57,13 @@ void TaskButton(void* pvParameters) {
   }
 }
 
-// Task 3: Read TSL2561, map 0–100 %, UART every 1 s
-void TaskSensor(void* pvParameters) {
-  sensors_event_t event;
-  const TickType_t xDelay = pdMS_TO_TICKS(1000);
 
-  for (;;) {
-    if (tsl.getEvent(&event)) {
-      float lux = event.light;
-      // Map to percentage
-      float pct = (lux - MIN_LUX) * 100.0 / (MAX_LUX - MIN_LUX);
-      pct = constrain(pct, 0.0, 100.0);
-
-
-    }
-    vTaskDelay(xDelay);
-  }
-}
 
 void setup() {
   // UART & I2C
   Serial.begin(9600);
   Wire.begin();
 
-  // Initialize sensor
-  if (!tsl.begin()) {
-    Serial.println("TSL2561 not found!");
-    while (1);
-  }
-  tsl.enableAutoRange(true);
-  tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_402MS);
 
   // Create RTOS primitives
   xButtonQueue   = xQueueCreate( 5, 0 );
@@ -96,7 +72,7 @@ void setup() {
   // Spawn tasks
   xTaskCreate(TaskBlink,  "Blink",  128, NULL, 1, NULL);
   xTaskCreate(TaskButton, "Button", 128, NULL, 2, NULL);
-  xTaskCreate(TaskSensor, "Sensor", 256, NULL, 1, NULL);
+
 
   // Start scheduler
   vTaskStartScheduler();
