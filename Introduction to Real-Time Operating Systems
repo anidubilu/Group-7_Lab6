@@ -1,0 +1,107 @@
+#include <Arduino_FreeRTOS.h>
+#include <queue.h>
+#include <semphr.h>
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_TSL2561_U.h>
+
+// Pins
+#define LED1_PIN    13
+#define LED2_PIN    12
+#define BUTTON_PIN   2
+
+// TSL2561 Configuration
+#define TSL2561_ADDR 0x39      // default I2C address
+#define MIN_LUX       0.0      // 0% reference
+#define MAX_LUX   40000.0      // 100% reference (bright sunlight)
+
+// FreeRTOS objects
+QueueHandle_t  xButtonQueue;
+SemaphoreHandle_t xSerialMutex;
+Adafruit_TSL2561_Unified tsl = Adafruit_TSL2561_Unified(TSL2561_ADDR);
+
+// ISR: notify button task
+void buttonISR() {
+  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+  xQueueSendFromISR(xButtonQueue, NULL, &xHigherPriorityTaskWoken);
+  if (xHigherPriorityTaskWoken) portYIELD_FROM_ISR();
+}
+
+// Task 1: Blink LED1 at 500 ms
+void TaskBlink(void* pvParameters) {
+  pinMode(LED1_PIN, OUTPUT);
+  for (;;) {
+    digitalWrite(LED1_PIN, !digitalRead(LED1_PIN));
+    vTaskDelay(pdMS_TO_TICKS(500));
+  }
+}
+
+// Task 2: Handle button presses → toggle LED2 + UART
+void TaskButton(void* pvParameters) {
+  pinMode(LED2_PIN, OUTPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, FALLING);
+
+  for (;;) {
+    // Block until ISR posts to queue
+    if (xQueueReceive(xButtonQueue, NULL, portMAX_DELAY) == pdTRUE) {
+      // Toggle LED2
+      digitalWrite(LED2_PIN, !digitalRead(LED2_PIN));
+
+      // Print message without clobbering other Serial output
+      if (xSemaphoreTake(xSerialMutex, pdMS_TO_TICKS(50))) {
+        Serial.print("Button pressed, LED2 is now ");
+        Serial.println(digitalRead(LED2_PIN) ? "ON" : "OFF");
+        xSemaphoreGive(xSerialMutex);
+      }
+    }
+  }
+}
+
+// Task 3: Read TSL2561, map 0–100 %, UART every 1 s
+void TaskSensor(void* pvParameters) {
+  sensors_event_t event;
+  const TickType_t xDelay = pdMS_TO_TICKS(1000);
+
+  for (;;) {
+    if (tsl.getEvent(&event)) {
+      float lux = event.light;
+      // Map to percentage
+      float pct = (lux - MIN_LUX) * 100.0 / (MAX_LUX - MIN_LUX);
+      pct = constrain(pct, 0.0, 100.0);
+
+
+    }
+    vTaskDelay(xDelay);
+  }
+}
+
+void setup() {
+  // UART & I2C
+  Serial.begin(9600);
+  Wire.begin();
+
+  // Initialize sensor
+  if (!tsl.begin()) {
+    Serial.println("TSL2561 not found!");
+    while (1);
+  }
+  tsl.enableAutoRange(true);
+  tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_402MS);
+
+  // Create RTOS primitives
+  xButtonQueue   = xQueueCreate( 5, 0 );
+  xSerialMutex   = xSemaphoreCreateMutex();
+
+  // Spawn tasks
+  xTaskCreate(TaskBlink,  "Blink",  128, NULL, 1, NULL);
+  xTaskCreate(TaskButton, "Button", 128, NULL, 2, NULL);
+  xTaskCreate(TaskSensor, "Sensor", 256, NULL, 1, NULL);
+
+  // Start scheduler
+  vTaskStartScheduler();
+}
+
+void loop() {
+  // empty — RTOS tasks take over
+}
